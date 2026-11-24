@@ -21,21 +21,23 @@ import type {Station, TidePoint} from './tide/types';
 
 // 'liberty' أقرب ما يكون إلى خرائط Google
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
-const CARTO_TILES = 'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png';
-const CARTO_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>';
+const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const OSM_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const OSM_MAX_ZOOM = 19;
 const DEFAULT_CENTER: [number, number] = [-122.4, 37.8];
 // بديل يعمل إن تعذّر تحميل النمط المتجهي (بلا مفتاح API)
 const RASTER_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    carto: {
+    osm: {
       type: 'raster',
-      tiles: [CARTO_TILES],
+      tiles: [OSM_TILES],
       tileSize: 256,
-      attribution: CARTO_ATTRIBUTION,
+      maxzoom: OSM_MAX_ZOOM,
+      attribution: OSM_ATTRIBUTION,
     },
   },
-  layers: [{id: 'carto', type: 'raster', source: 'carto'}],
+  layers: [{id: 'osm', type: 'raster', source: 'osm'}],
 };
 // MapLibre derives the worker URL from its own module URL; serve the worker explicitly.
 maplibregl.setWorkerUrl(`${import.meta.env.BASE_URL}maplibre-gl-worker.mjs`);
@@ -65,7 +67,7 @@ interface State {
   opacity: number;
   islandMode: boolean;
   islandElevation: number;
-  styleSource: 'loading' | 'openfreemap' | 'carto' | 'background';
+  styleSource: 'loading' | 'openfreemap' | 'osm' | 'background';
   demError: boolean;
   demVisible: boolean;
   placeMarker: {remove(): unknown} | null;
@@ -162,7 +164,7 @@ async function initRasterMap() {
   rasterMap = leaflet.map('map', {zoomControl: false})
     .setView([DEFAULT_CENTER[1], DEFAULT_CENTER[0]], 7);
   leaflet.control.zoom({position: 'bottomright'}).addTo(rasterMap);
-  const tiles = leaflet.tileLayer(CARTO_TILES, {attribution: CARTO_ATTRIBUTION, maxZoom: 19});
+  const tiles = leaflet.tileLayer(OSM_TILES, {attribution: OSM_ATTRIBUTION, maxZoom: OSM_MAX_ZOOM});
   state.styleSource = 'loading';
   const reportUnavailable = () => {
     if (state.styleSource !== 'loading') return;
@@ -171,9 +173,9 @@ async function initRasterMap() {
   };
   const timer = setTimeout(reportUnavailable, 8000);
   tiles.on('tileload', () => {
-    if (state.styleSource === 'carto') return;
+    if (state.styleSource === 'osm') return;
     clearTimeout(timer);
-    state.styleSource = 'carto';
+    state.styleSource = 'osm';
     renderMapStatus();
   });
   tiles.on('load', () => {
@@ -214,8 +216,7 @@ async function initMap() {
     new maplibregl.AttributionControl({
       customAttribution:
         'Elevation: <a href="https://registry.opendata.aws/terrain-tiles/">AWS Terrain Tiles</a> · ' +
-        'Tide: <a href="https://tidesandcurrents.noaa.gov/">NOAA CO-OPS</a> · ' +
-        'Basemap: <a href="https://openfreemap.org/">OpenFreeMap</a>',
+        'Tide: <a href="https://tidesandcurrents.noaa.gov/">NOAA CO-OPS</a>',
     }),
     'bottom-right',
   );
@@ -228,7 +229,7 @@ async function initMap() {
   if (await tryBasemap(map, STYLE_URL)) {
     state.styleSource = 'openfreemap';
   } else if (await tryBasemap(map, RASTER_STYLE)) {
-    state.styleSource = 'carto';
+    state.styleSource = 'osm';
   } else {
     state.styleSource = 'background';
     const ready = map.once('style.load');
@@ -413,7 +414,7 @@ function renderMapStatus() {
   const basemapMissing = state.styleSource === 'background';
   const styleName = {
     openfreemap: 'OpenFreeMap',
-    carto: 'CARTO',
+    osm: 'OpenStreetMap',
     background: t('basemapUnavailable'),
     loading: t('loading'),
   }[state.styleSource];
