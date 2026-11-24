@@ -1,0 +1,11 @@
+# The web app lives in app/ (Vite + TypeScript + MapLibre GL JS).
+[build]
+  base = "app"
+  command = "npm run build"
+  publish = "dist"
+
+# The MapLibre worker is loaded as an ES module — make sure it is served with a JS MIME type.
+[[headers]]
+  for = "/maplibre-gl-worker.mjs"
+  [headers.values]
+    Content-Type = "text/javascript; charset=utf-8"
