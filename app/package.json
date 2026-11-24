@@ -1,0 +1,23 @@
+{
+  "name": "tide-atlas",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/copy-worker.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/copy-worker.mjs",
+    "build": "tsc && vite build",
+    "preview": "vite preview --port 4173",
+    "verify": "node scripts/verify-app.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "verify-offline": "node scripts/verify-offline.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~7.0.2",
+    "vite": "^8.3.6"
+  },
+  "dependencies": {
+    "maplibre-gl": "^6.19.0"
+  }
+}

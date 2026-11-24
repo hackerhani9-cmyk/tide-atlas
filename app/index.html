@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>مدّ — خريطة المد والجزر</title>
+    <meta name="description" content="خريطة تفاعلية تُظهر ارتفاع البحر حسب المد، فتظهر الجزر والسباخ وتختفي مع كل مدّ." />
+    <link rel="icon" href="/favicon.svg" />
+    <style>
+      /* أنماط حرجة لشاشة الإقلاع — تعمل حتى لو تعذّر تحميل ملف CSS (file://) */
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: radial-gradient(circle at 50% 40%, #10273d 0%, #060d15 70%);
+        font-family: 'Segoe UI', Tahoma, system-ui, sans-serif;
+        color: #e6eef6;
+      }
+      #boot.hidden { display: none; }
+      .boot-box {
+        max-width: 560px; margin: 20px; text-align: center;
+        background: #0b1622; border: 1px solid rgba(255,255,255,.14);
+        border-radius: 16px; padding: 26px 28px; line-height: 1.8;
+      }
+      .boot-box h2 { margin: 14px 0 6px; font-size: 17px; }
+      .boot-box p { margin: 0 0 10px; font-size: 13px; color: #8ea4b8; }
+      .boot-box pre {
+        text-align: left; background: rgba(0,0,0,.45); border: 1px solid rgba(255,255,255,.14);
+        border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: #cfe6f5;
+        overflow-x: auto; direction: ltr;
+      }
+      .boot-box code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; direction: ltr; }
+      .boot-spinner {
+        width: 38px; height: 38px; margin: 0 auto; border-radius: 50%;
+        border: 3px solid rgba(79,195,247,.25); border-top-color: #4fc3f7;
+        animation: boot-spin 1s linear infinite;
+      }
+      @keyframes boot-spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <div id="boot">
+      <div class="boot-box">
+        <div class="boot-spinner"></div>
+        <h2 id="boot-title">جارٍ تشغيل خريطة المد…</h2>
+        <p id="boot-msg">يتم الآن تحميل نموذج الارتفاع الرقمي وتنبؤات المدّ.</p>
+        <pre id="boot-cmd">cd tide-atlas/app
+npm install
+npm run dev        # ثم افتح http://localhost:5173</pre>
+        <button id="boot-retry" class="primary" style="display: none" data-i18n="retry"></button>
+        <p class="boot-hint">
+          لا يعمل التطبيق بفتح ملف <code>index.html</code> مباشرة (file://) — المتصفحات تمنع
+          تحميل وحدات JavaScript من نظام الملفات. شغّله عبر خادم HTTP كما في الأمر أعلاه.
+        </p>
+      </div>
+    </div>
+
+    <div id="search">
+      <div class="search-field">
+        <span class="search-icon">🔍</span>
+        <input id="search-input" type="search" autocomplete="off" data-i18n="searchPlaceholder" />
+        <span class="search-hint" data-i18n="searchHint"></span>
+      </div>
+      <div id="search-results"></div>
+    </div>
+
+    <aside id="panel">
+      <header class="panel-head">
+        <div class="brand">
+          <h1 data-i18n="title">مدّ — خريطة المد والجزر</h1>
+          <p data-i18n="subtitle"></p>
+        </div>
+        <div class="head-actions">
+          <button id="btn-lang" class="ghost" title="Language">English</button>
+          <button id="btn-about" class="ghost" title="About">?</button>
+        </div>
+      </header>
+
+      <section class="readout">
+        <div class="level-box">
+          <span class="label" data-i18n="level"></span>
+          <span class="value" id="level-value">—</span>
+          <span class="trend" id="trend">—</span>
+        </div>
+        <div class="metrics">
+          <div><span class="label" data-i18n="range"></span><span id="range-value">—</span></div>
+          <div><span class="label" data-i18n="accuracy"></span><span id="accuracy-value">—</span></div>
+          <div><span class="label" data-i18n="nextHigh"></span><span id="next-high">—</span></div>
+          <div><span class="label" data-i18n="nextLow"></span><span id="next-low">—</span></div>
+          <div class="jump">
+            <button id="btn-jump-high" class="ghost small" data-i18n="jumpHigh"></button>
+            <button id="btn-jump-low" class="ghost small" data-i18n="jumpLow"></button>
+          </div>
+        </div>
+        <span id="source-badge" class="badge">—</span>
+        <div class="status-row">
+          <span class="label" data-i18n="mapStatus"></span>
+          <span id="map-status">—</span>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2 data-i18n="stations"></h2>
+        <input id="station-search" type="search" autocomplete="off" data-i18n="search" />
+        <div id="station-list"></div>
+      </section>
+
+      <section class="block">
+        <div class="row">
+          <button id="btn-dem" class="primary" data-i18n="demOn"></button>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2 data-i18n="exaggeration"></h2>
+        <div class="slider-row">
+          <input id="exaggeration" type="range" min="1" max="12" step="0.5" value="4" />
+          <output id="exaggeration-value">4×</output>
+        </div>
+        <h2 data-i18n="bias"></h2>
+        <div class="slider-row">
+          <input id="bias" type="range" min="-2" max="2" step="0.1" value="0" />
+          <output id="bias-value">0.00 م</output>
+        </div>
+        <h2 data-i18n="opacity"></h2>
+        <div class="slider-row">
+          <input id="opacity" type="range" min="0.2" max="1" step="0.05" value="1" />
+          <output id="opacity-value">100%</output>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2 data-i18n="addIsland"></h2>
+        <div class="row">
+          <button id="btn-island" class="primary" data-i18n="addIsland"></button>
+          <button id="btn-clear-islands" class="ghost" data-i18n="removeIsland"></button>
+        </div>
+        <p id="island-hint" class="hint" style="display: none" data-i18n="addIslandHint"></p>
+        <div class="slider-row">
+          <span class="label" data-i18n="islandElevation"></span>
+          <input id="island-elevation" type="range" min="0" max="40" step="0.5" value="5" />
+          <output id="island-elevation-value">5 م</output>
+        </div>
+      </section>
+
+      <footer class="panel-foot">
+        <span id="data-note" data-i18n="dataNote"></span>
+      </footer>
+    </aside>
+
+    <section id="chart-panel">
+      <div class="chart-head">
+        <span data-i18n="tideCurve"></span>
+        <span class="muted" data-i18n="window"></span>
+      </div>
+      <canvas id="chart"></canvas>
+    </section>
+
+    <section id="timeline">
+      <button id="btn-now" class="ghost" data-i18n="now"></button>
+      <button id="btn-play" class="primary" data-i18n="play"></button>
+      <div class="slider-row grow">
+        <input id="time-slider" type="range" min="0" max="100" step="60000" value="0" />
+        <span id="timeline-window" class="muted"></span>
+      </div>
+      <div class="speed">
+        <span class="label" data-i18n="speed"></span>
+        <input id="speed" type="range" min="10" max="600" step="10" value="120" />
+        <output id="speed-value">120×</output>
+      </div>
+      <span id="time-label" class="time-label">—</span>
+      <button id="btn-export" class="ghost" data-i18n="exportPng"></button>
+    </section>
+
+    <div id="about-modal">
+      <div class="modal-box">
+        <button id="about-close" class="ghost close">×</button>
+        <h2 data-i18n="about"></h2>
+        <p data-i18n="aboutBody"></p>
+        <p class="muted" data-i18n="dataNote"></p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
