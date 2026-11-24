@@ -41,9 +41,8 @@ const dict: Record<Lang, Record<string, string>> = {
     demOn: 'طبقة المدّ مُفعّلة',
     demOff: 'طبقة المدّ متوقفة',
     retry: 'إعادة المحاولة',
-    mapFailed: 'تعذّر رسم الخريطة',
-    mapFailedMsg:
-      'حاولت كل مصادر الخريطة المتاحة. تأكّد من الاتصال بالإنترنت أو اضغط «إعادة المحاولة».',
+    basemapUnavailable: 'الخريطة الأساسية غير متاحة',
+    terrainNeedsWebgl: 'تتطلّب طبقة التضاريس WebGL 2',
     rotateHint: 'اسحب بالزر الأيمن للتدوير · Ctrl+سحب للإمالة',
     liveNoaa: 'تنبؤات NOAA الرسمية (مباشرة)',
     offlineModel: 'النموذج المحلي (بدون اتصال)',
@@ -107,9 +106,8 @@ const dict: Record<Lang, Record<string, string>> = {
     demOn: 'Tide layer on',
     demOff: 'Tide layer off',
     retry: 'Retry',
-    mapFailed: 'Could not draw the map',
-    mapFailedMsg:
-      'All map sources were tried. Check your internet connection or press “Retry”.',
+    basemapUnavailable: 'Basemap unavailable',
+    terrainNeedsWebgl: 'Terrain requires WebGL 2',
     rotateHint: 'Right-drag to rotate · Ctrl+drag to tilt',
     liveNoaa: 'Official NOAA predictions (live)',
     offlineModel: 'Local model (offline)',
