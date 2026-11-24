@@ -1,4 +1,5 @@
 import * as maplibregl from 'maplibre-gl';
+import type {Map as RasterMap} from 'leaflet';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 
@@ -20,15 +21,18 @@ import type {Station, TidePoint} from './tide/types';
 
 // 'liberty' أقرب ما يكون إلى خرائط Google
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+const CARTO_TILES = 'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png';
+const CARTO_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>';
+const DEFAULT_CENTER: [number, number] = [-122.4, 37.8];
 // بديل يعمل إن تعذّر تحميل النمط المتجهي (بلا مفتاح API)
 const RASTER_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
     carto: {
       type: 'raster',
-      tiles: ['https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png'],
+      tiles: [CARTO_TILES],
       tileSize: 256,
-      attribution: '© OpenStreetMap contributors © CARTO',
+      attribution: CARTO_ATTRIBUTION,
     },
   },
   layers: [{id: 'carto', type: 'raster', source: 'carto'}],
@@ -43,13 +47,6 @@ const FALLBACK_STYLE: maplibregl.StyleSpecification = {
 
 function hideBoot() {
   document.querySelector('#boot')?.classList.add('hidden');
-}
-
-function bootMessage(title: string, msg: string) {
-  const t = document.querySelector('#boot-title');
-  const m = document.querySelector('#boot-msg');
-  if (t) t.textContent = title;
-  if (m) m.textContent = msg;
 }
 
 const WINDOW_MS = 48 * 3600_000;
@@ -68,10 +65,10 @@ interface State {
   opacity: number;
   islandMode: boolean;
   islandElevation: number;
-  styleSource: string;
+  styleSource: 'loading' | 'openfreemap' | 'carto' | 'background';
   demError: boolean;
   demVisible: boolean;
-  placeMarker: maplibregl.Marker | null;
+  placeMarker: {remove(): unknown} | null;
 }
 
 const state: State = {
@@ -88,15 +85,17 @@ const state: State = {
   opacity: 1,
   islandMode: false,
   islandElevation: 5,
-  styleSource: 'openfreemap',
+  styleSource: 'loading',
   demError: false,
   demVisible: true,
   placeMarker: null,
 };
 
-let map: maplibregl.Map;
-let demLayer: TideDemLayer;
-let islands: IslandManager;
+let map: maplibregl.Map | undefined;
+let rasterMap: RasterMap | undefined;
+let rasterMarker: typeof import('leaflet').marker | undefined;
+let demLayer: TideDemLayer | undefined;
+let islands: IslandManager | undefined;
 let chart: TideChart;
 
 /* ------------------------------------------------------------------ */
@@ -133,69 +132,78 @@ function effectiveLevel(): number {
 /* map                                                                 */
 /* ------------------------------------------------------------------ */
 
-/** ينتظر جاهزية الخريطة دون أن يُفشل التطبيقَ كلَّه عند بطء الشبكة */
-function waitForMap(m: maplibregl.Map, timeoutMs: number): Promise<boolean> {
+function tryBasemap(target: maplibregl.Map, style: string | maplibregl.StyleSpecification): Promise<boolean> {
   return new Promise((resolve) => {
-    let settled = false;
-    const done = (ok: boolean) => {
-      if (settled) return;
-      settled = true;
-      resolve(ok);
+    const finish = (loaded: boolean) => {
+      clearTimeout(timer);
+      target.off('sourcedata', onTile);
+      target.off('idle', onIdle);
+      resolve(loaded);
     };
-    m.on('load', () => done(true));
-    m.on('idle', () => done(true));
-    setTimeout(() => done(false), timeoutMs);
+    const onTile = (event: maplibregl.MapSourceDataEvent) => {
+      if (event.tile?.state === 'loaded') finish(true);
+    };
+    const onIdle = () => finish(false);
+    const timer = setTimeout(onIdle, 8000);
+    target.on('sourcedata', onTile);
+    target.on('idle', onIdle);
+    try {
+      target.setStyle(style, {diff: false});
+    } catch (error) {
+      console.warn('[style]', error);
+      finish(false);
+    }
   });
 }
 
-/** يجرّب مصادر الخريطة بالترتيب حتى ينجح أحدها */
-async function loadStyleWithFallback(): Promise<{style: any; source: string}> {
-  const candidates: [string, () => Promise<any>][] = [
-    [
-      'openfreemap',
-      async () => {
-        const res = await fetch(STYLE_URL);
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      },
-    ],
-    ['carto', async () => RASTER_STYLE],
-    ['background', async () => FALLBACK_STYLE],
-  ];
-  for (const [name, loader] of candidates) {
-    try {
-      const style = await loader();
-      return {style, source: name};
-    } catch (e) {
-      console.warn('[style] فشل المصدر', name, e);
-    }
-  }
-  return {style: FALLBACK_STYLE, source: 'background'};
+async function initRasterMap() {
+  const [leaflet] = await Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')]);
+  rasterMarker = leaflet.marker;
+  rasterMap = leaflet.map('map', {zoomControl: false})
+    .setView([DEFAULT_CENTER[1], DEFAULT_CENTER[0]], 7);
+  leaflet.control.zoom({position: 'bottomright'}).addTo(rasterMap);
+  const tiles = leaflet.tileLayer(CARTO_TILES, {attribution: CARTO_ATTRIBUTION, maxZoom: 19});
+  state.styleSource = 'loading';
+  const reportUnavailable = () => {
+    if (state.styleSource !== 'loading') return;
+    state.styleSource = 'background';
+    renderMapStatus();
+  };
+  const timer = setTimeout(reportUnavailable, 8000);
+  tiles.on('tileload', () => {
+    if (state.styleSource === 'carto') return;
+    clearTimeout(timer);
+    state.styleSource = 'carto';
+    renderMapStatus();
+  });
+  tiles.on('load', () => {
+    clearTimeout(timer);
+    reportUnavailable();
+  });
+  tiles.addTo(rasterMap);
+  rasterMap.on('moveend', refreshStationList);
 }
 
 async function initMap() {
-  demLayer = new TideDemLayer({});
-  if (!document.createElement('canvas').getContext('webgl2')) {
-    bootMessage(
-      'المتصفح لا يدعم WebGL 2',
-      'يحتاج التطبيق WebGL 2 لعرض التضاريس. جرّب متصفحاً حديثاً أو فعّل تسريع الرسوميات.',
-    );
-    throw new Error('WebGL2 unsupported');
+  let target: maplibregl.Map;
+  try {
+    target = new maplibregl.Map({
+      container: 'map',
+      center: DEFAULT_CENTER,
+      zoom: 7,
+      maxPitch: 60,
+      attributionControl: false,
+      canvasContextAttributes: {preserveDrawingBuffer: true, antialias: true},
+    });
+  } catch (error) {
+    console.warn('[map] WebGL initialization failed', error);
+    state.styleSource = 'background';
+    await initRasterMap();
+    return;
   }
+  map = target;
+  demLayer = new TideDemLayer({});
 
-  const {style, source} = await loadStyleWithFallback();
-  state.styleSource = source;
-  (window as any).__styleSource = source;
-
-  map = new maplibregl.Map({
-    container: 'map',
-    style,
-    center: [-122.4, 37.8],
-    zoom: 7,
-    maxPitch: 60,
-    attributionControl: false,
-    canvasContextAttributes: {preserveDrawingBuffer: true, antialias: true},
-  });
   map.addControl(
     new maplibregl.NavigationControl({showCompass: true, visualizePitch: true}),
     'bottom-right',
@@ -217,21 +225,16 @@ async function initMap() {
     console.warn('[map]', (e as any)?.error?.message ?? e);
   });
 
-  await waitForMap(map, 15000);
-
-  // إن لم يُحمَّل النمط المتجهي (شبكة محجوبة/بطيئة) ننتقل إلى النمط النقطي
-  if (!safeLayers().length) {
-    console.warn('[style] تعذّر تحميل النمط — التحويل إلى CARTO');
+  if (await tryBasemap(map, STYLE_URL)) {
+    state.styleSource = 'openfreemap';
+  } else if (await tryBasemap(map, RASTER_STYLE)) {
     state.styleSource = 'carto';
-    try {
-      map.setStyle(RASTER_STYLE);
-      await waitForMap(map, 12000);
-    } catch (e) {
-      console.warn('[style] فشل النمط النقطي أيضاً', e);
-    }
+  } else {
+    state.styleSource = 'background';
+    const ready = map.once('style.load');
+    map.setStyle(FALLBACK_STYLE, {diff: false});
+    await ready;
   }
-
-  hideBoot();
 
   try {
     map.addLayer(demLayer, firstSymbolLayerId());
@@ -239,29 +242,13 @@ async function initMap() {
     console.error('[dem]', e);
     state.demError = true;
   }
-  map.on('styledata', () => {
-    // بعد تبديل النمط (fallback) نعيد إدراج طبقة المدّ
-    if (!map.getLayer('tide-dem') && !state.demError) {
-      try {
-        map.addLayer(demLayer, firstSymbolLayerId());
-      } catch (e) {
-        console.warn('[dem] تعذّرت الإعادة', e);
-      }
-    }
-  });
-
-  islands = new IslandManager(map);
-  chart = new TideChart($<HTMLCanvasElement>('#chart'), {
-    color: '#4fc3f7',
-    accent: '#ff6b6b',
-    grid: 'rgba(255,255,255,0.09)',
-    text: '#9fb4c8',
-  });
+  const islandManager = new IslandManager(map);
+  islands = islandManager;
 
   map.on('click', (e) => {
     if (!state.islandMode) return;
-    islands.add(e.lngLat.lng, e.lngLat.lat, state.islandElevation, 6);
-    islands.updateTide(effectiveLevel());
+    islandManager.add(e.lngLat.lng, e.lngLat.lat, state.islandElevation, 6);
+    islandManager.updateTide(effectiveLevel());
     render();
   });
   map.on('moveend', () => {
@@ -283,10 +270,15 @@ function firstSymbolLayerId(): string | undefined {
  */
 function safeLayers(): maplibregl.LayerSpecification[] {
   try {
-    return (map.getStyle()?.layers ?? []) as maplibregl.LayerSpecification[];
+    return map?.getStyle()?.layers ?? [];
   } catch {
     return [];
   }
+}
+
+function moveTo(lng: number, lat: number, zoom: number, duration = 0) {
+  map?.flyTo({center: [lng, lat], zoom, duration, essential: false});
+  rasterMap?.setView([lat, lng], zoom, {animate: duration > 0});
 }
 
 /* ------------------------------------------------------------------ */
@@ -307,13 +299,11 @@ async function loadData() {
       state.stations.find((s) => s.id === '9414290') ??
       [...state.stations].sort((a, b) => (b.meanRange ?? 0) - (a.meanRange ?? 0))[0];
   }
-  if (state.station) {
-    map.setCenter([state.station.lng, state.station.lat]);
-    map.setZoom(8);
-  }
-  await refreshTideData();
+  if (state.station) moveTo(state.station.lng, state.station.lat, 8);
+  updateChart();
   render();
   refreshStationList();
+  void refreshTideData().then(render);
 }
 
 async function refreshTideData() {
@@ -362,9 +352,9 @@ function render() {
 
 function renderInner() {
   const level = effectiveLevel();
-  demLayer.setTide(level, state.exaggeration, state.bias);
-  demLayer.setOpacity(state.opacity);
-  islands.updateTide(level);
+  demLayer?.setTide(level, state.exaggeration, state.bias);
+  demLayer?.setOpacity(state.opacity);
+  islands?.updateTide(level);
 
   // readouts
   const levelEl = $('#level-value');
@@ -391,26 +381,7 @@ function renderInner() {
   $('#next-high').textContent = levelOf(nextH);
   $('#next-low').textContent = levelOf(nextL);
 
-  // حالة الخريطة: مصدر الأساس + طبقة الارتفاع
-  const styleName =
-    state.styleSource === 'openfreemap'
-      ? 'OpenFreeMap'
-      : state.styleSource === 'carto'
-        ? 'CARTO'
-        : '—';
-  const dem = demLayer?.stats;
-  const demText = state.demError
-    ? 'DEM ✕'
-    : dem && dem.failed > 2
-      ? `DEM ✕ (${dem.failed})`
-      : dem && dem.loaded > 0
-        ? `DEM ✓ (${dem.loaded})`
-        : 'DEM …';
-  const statusEl = $('#map-status');
-  if (statusEl) {
-    statusEl.textContent = `${styleName} · ${demText}`;
-    statusEl.className = state.demError || (dem && dem.failed > 2) ? 'bad' : '';
-  }
+  renderMapStatus();
 
   // source badge
   const badge = $('#source-badge');
@@ -438,11 +409,35 @@ function trendFromModel(): number {
   return tideAt(state.station, state.time + 3600_000) - tideAt(state.station, state.time);
 }
 
+function renderMapStatus() {
+  const basemapMissing = state.styleSource === 'background';
+  const styleName = {
+    openfreemap: 'OpenFreeMap',
+    carto: 'CARTO',
+    background: t('basemapUnavailable'),
+    loading: t('loading'),
+  }[state.styleSource];
+  const dem = demLayer?.stats;
+  const demFailed = state.demError || (dem?.failed ?? 0) > 2;
+  const terrain = !map
+    ? t('terrainNeedsWebgl')
+    : demFailed
+      ? 'DEM ✕'
+      : dem?.loaded
+        ? `DEM ✓ (${dem.loaded})`
+        : 'DEM …';
+  const status = $('#map-status');
+  status.textContent = `${styleName} · ${terrain}`;
+  status.classList.toggle('bad', basemapMissing || demFailed);
+  $('#map-retry').hidden = !basemapMissing;
+}
+
 function refreshStationList() {
   const list = $('#station-list');
   if (!list) return;
   const query = ($('#station-search') as HTMLInputElement).value.trim().toLowerCase();
-  const center = map.getCenter();
+  const center = map?.getCenter() ?? rasterMap?.getCenter() ?? state.station ??
+    {lng: DEFAULT_CENTER[0], lat: DEFAULT_CENTER[1]};
   const near = new Set(nearestStations(state.stations, center.lat, center.lng, 8).map((s) => s.id));
   const filtered = state.stations
     .filter((s) => !query || s.name.toLowerCase().includes(query) || s.id.includes(query))
@@ -467,7 +462,7 @@ function refreshStationList() {
 
 async function selectStation(s: Station) {
   state.station = s;
-  map.flyTo({center: [s.lng, s.lat], zoom: 9, duration: 1400, essential: false});
+  moveTo(s.lng, s.lat, 9, 1400);
   await refreshTideData();
   render();
   refreshStationList();
@@ -475,6 +470,7 @@ async function selectStation(s: Station) {
 
 /** إظهار/إخفاء طبقة المدّ — يتيح رؤية الخريطة الأساسية بشكل خرائط Google */
 function toggleDemLayer() {
+  if (!map || !demLayer) return;
   state.demVisible = !state.demVisible;
   try {
     if (state.demVisible && !map.getLayer('tide-dem')) {
@@ -551,7 +547,7 @@ function bindSearch() {
           if (it.kind === 'station') {
             void selectStation(it.station as Station);
           } else {
-            map.flyTo({center: [it.lng, it.lat], zoom: 13, duration: 1600, essential: false});
+            moveTo(it.lng, it.lat, 13, 1600);
             showPlaceMarker(it.lng, it.lat, it.name);
           }
         };
@@ -581,7 +577,11 @@ function showPlaceMarker(lng: number, lat: number, name: string) {
   el.className = 'place-marker';
   el.innerHTML = '<span class="pm-dot"></span><span class="pm-label"></span>';
   (el.querySelector('.pm-label') as HTMLElement).textContent = name.split(',')[0];
-  state.placeMarker = new maplibregl.Marker({element: el}).setLngLat([lng, lat]).addTo(map);
+  if (map) {
+    state.placeMarker = new maplibregl.Marker({element: el}).setLngLat([lng, lat]).addTo(map);
+  } else if (rasterMap && rasterMarker) {
+    state.placeMarker = rasterMarker([lat, lng], {title: name, alt: name}).addTo(rasterMap);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -625,8 +625,9 @@ function bindControls() {
     updatePlayButton();
   };
   $('#btn-export').onclick = () => {
-    map.once('idle', () => {
-      const canvas = map.getCanvas();
+    const target = map;
+    target?.once('idle', () => {
+      const canvas = target.getCanvas();
       const a = document.createElement('a');
       a.download = `tide-atlas-${new Date(state.time).toISOString().slice(0, 16)}.png`;
       a.href = canvas.toDataURL('image/png');
@@ -658,6 +659,7 @@ function bindControls() {
   });
 
   $('#btn-island').onclick = () => {
+    if (!map) return;
     state.islandMode = !state.islandMode;
     $('#btn-island').classList.toggle('active', state.islandMode);
     map.getCanvas().style.cursor = state.islandMode ? 'crosshair' : '';
@@ -669,17 +671,19 @@ function bindControls() {
     $('#island-elevation-value').textContent = `${islElev.value} م`;
   });
   $('#btn-clear-islands').onclick = () => {
-    islands.clear();
+    islands?.clear();
   };
 
   ($('#station-search') as HTMLInputElement).addEventListener('input', refreshStationList);
   bindSearch();
 
   $('#btn-dem').onclick = () => toggleDemLayer();
+  $('#map-retry').onclick = () => location.reload();
   $('#btn-lang').onclick = () => {
     setLang(getLang() === 'ar' ? 'en' : 'ar');
     applyStrings();
     render();
+    renderMapStatus();
     refreshStationList();
   };
   $('#btn-about').onclick = () => {
@@ -722,23 +726,29 @@ async function main() {
   window.addEventListener('error', (e) => console.error('[window]', e.message));
   window.addEventListener('unhandledrejection', (e) => console.error('[rejection]', String(e.reason)));
   setLang('ar');
+  chart = new TideChart($<HTMLCanvasElement>('#chart'), {
+    color: '#4fc3f7',
+    accent: '#ff6b6b',
+    grid: 'rgba(255,255,255,0.09)',
+    text: '#9fb4c8',
+  });
   applyStrings();
   bindControls();
   try {
     await initMap();
   } catch (e) {
     console.error('[map]', e);
-    bootMessage(
-      'تعذّر رسم الخريطة',
-      'جرّب كل مصادر الخريطة المتاحة ولم ينجح أيّها. تحقّق من الاتصال بالإنترنت أو اضغط «إعادة المحاولة».',
-    );
-    const retry = document.querySelector('#boot-retry') as HTMLButtonElement | null;
-    if (retry) {
-      retry.style.display = 'inline-block';
-      retry.onclick = () => location.reload();
-    }
-    // الواجهة (المحطات والمنحنى) تبقى تعمل بلا خريطة
+    state.styleSource = 'background';
   }
+  for (const selector of ['#btn-dem', '#exaggeration', '#bias', '#opacity']) {
+    $<HTMLButtonElement | HTMLInputElement>(selector).disabled = !map || state.demError;
+  }
+  for (const selector of ['#btn-island', '#btn-clear-islands', '#island-elevation']) {
+    $<HTMLButtonElement | HTMLInputElement>(selector).disabled = !islands;
+  }
+  $<HTMLButtonElement>('#btn-export').disabled = !map;
+  renderMapStatus();
+  hideBoot();
   try {
     await loadData();
   } catch (e) {
